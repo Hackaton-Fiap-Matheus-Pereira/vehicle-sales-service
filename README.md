@@ -94,3 +94,6 @@ Para habilitar o deploy, configure `ENABLE_K8S_DEPLOY=true`, o secret `KUBE_CONF
 o kubeconfig em Base64 e, opcionalmente, `KUBE_NAMESPACE` (padrão `vehicle-sales`). Sem a
 variável, testes e publicação no GHCR continuam funcionando e o deploy é apenas ignorado.
 Proteja a branch `main` para que a implantação seja originada por merge de Pull Request.
+
+## Entrega acadêmica
+Projeto desenvolvido para o Tech Challenge da Pós-Tech.
