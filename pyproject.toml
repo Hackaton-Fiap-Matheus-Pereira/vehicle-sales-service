@@ -1,0 +1,62 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vehicle-sales-service"
+version = "1.0.0"
+description = "Microsserviço assíncrono de listagem, compra e pagamento de veículos"
+readme = "README.md"
+requires-python = ">=3.12,<4"
+dependencies = [
+  "aiomysql>=0.2.0,<1",
+  "alembic>=1.14.0,<2",
+  "fastapi>=0.115.0,<1",
+  "httpx>=0.28.0,<1",
+  "pydantic>=2.10.0,<3",
+  "pydantic-settings>=2.7.0,<3",
+  "sqlalchemy[asyncio]>=2.0.36,<3",
+  "uvicorn[standard]>=0.32.0,<1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "aiosqlite>=0.20.0,<1",
+  "pytest>=8.3.0,<10",
+  "pytest-asyncio>=0.25.0,<2",
+  "pytest-cov>=6.0.0,<8",
+  "ruff>=0.9.0,<1",
+]
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.pytest.ini_options]
+addopts = "-q --cov=app --cov-branch --cov-report=term-missing --cov-fail-under=80"
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.coverage.run]
+branch = true
+source = ["app"]
+concurrency = ["greenlet"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+exclude_also = [
+  "if TYPE_CHECKING:",
+  "if __name__ == .__main__.:",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["app", "tests"]
+extend-exclude = ["build", "*.egg-info"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "ASYNC"]
+
+[tool.ruff.lint.per-file-ignores]
+"alembic/versions/*.py" = ["E501"]

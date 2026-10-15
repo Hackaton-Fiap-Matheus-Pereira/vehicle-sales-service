@@ -1,0 +1,137 @@
+name: CI/CD
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vehicle-sales-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Ruff e testes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Instalar dependências
+        run: python -m pip install --upgrade pip ".[dev]"
+      - name: Executar Ruff
+        run: |
+          ruff check .
+          ruff format --check .
+      - name: Executar testes
+        run: pytest --cov-report=term-missing --cov-report=xml
+
+  image:
+    name: Publicar imagem no GHCR
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: quality
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.image.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: image
+        shell: bash
+        run: |
+          repository="ghcr.io/${GITHUB_REPOSITORY,,}"
+          echo "repository=$repository" >> "$GITHUB_OUTPUT"
+          echo "image=$repository:$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ steps.image.outputs.image }}
+            ${{ steps.image.outputs.repository }}:latest
+
+  deploy:
+    name: Deploy com kubectl
+    if: >-
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main' &&
+      vars.ENABLE_K8S_DEPLOY == 'true'
+    needs: image
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      KUBE_NAMESPACE: ${{ vars.KUBE_NAMESPACE || 'vehicle-sales' }}
+    steps:
+      - uses: azure/setup-kubectl@v4
+      - name: Configurar cluster
+        shell: bash
+        env:
+          KUBE_CONFIG_B64: ${{ secrets.KUBE_CONFIG_B64 }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/kube"
+          printf '%s' "$KUBE_CONFIG_B64" | base64 --decode > "$RUNNER_TEMP/kube/config"
+          chmod 600 "$RUNNER_TEMP/kube/config"
+      - name: Executar migration
+        shell: bash
+        env:
+          KUBECONFIG: ${{ runner.temp }}/kube/config
+          IMAGE: ${{ needs.image.outputs.image }}
+        run: |
+          migration_job="vehicle-sales-migration-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          cat <<EOF | kubectl apply -f -
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: ${migration_job}
+            namespace: ${KUBE_NAMESPACE}
+          spec:
+            backoffLimit: 2
+            ttlSecondsAfterFinished: 300
+            template:
+              metadata:
+                labels:
+                  app.kubernetes.io/name: vehicle-sales-service
+                  app.kubernetes.io/component: migration
+              spec:
+                restartPolicy: Never
+                containers:
+                  - name: migration
+                    image: ${IMAGE}
+                    command: ["alembic", "upgrade", "head"]
+                    envFrom:
+                      - configMapRef:
+                          name: vehicle-sales-config
+                      - secretRef:
+                          name: vehicle-sales-secrets
+                    securityContext:
+                      runAsNonRoot: true
+                      runAsUser: 10001
+                      allowPrivilegeEscalation: false
+                      capabilities:
+                        drop: ["ALL"]
+          EOF
+          kubectl -n "$KUBE_NAMESPACE" wait --for=condition=complete \
+            "job/${migration_job}" --timeout=180s
+      - name: Atualizar deployment
+        env:
+          KUBECONFIG: ${{ runner.temp }}/kube/config
+          IMAGE: ${{ needs.image.outputs.image }}
+        run: |
+          kubectl -n "$KUBE_NAMESPACE" set image \
+            deployment/vehicle-sales-service api="$IMAGE"
+          kubectl -n "$KUBE_NAMESPACE" rollout status \
+            deployment/vehicle-sales-service --timeout=180s
